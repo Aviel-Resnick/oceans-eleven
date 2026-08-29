@@ -174,7 +174,6 @@ button:disabled {
   position: absolute;
   top: 18px;
   left: 50%;
-  transform: translateX(-50%);
   background: #141414;
   border: 1px solid #333;
   border-radius: 4px;
@@ -185,6 +184,26 @@ button:disabled {
   text-align: center;
   z-index: 5;
   pointer-events: none;
+}
+.toast-fade {
+  animation: toastFade 1.6s ease-out both;
+}
+@keyframes toastFade {
+  0% {
+    opacity: 0;
+    transform: translateX(-50%) translateY(-6px);
+  }
+  15% {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+  }
+  70% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+    transform: translateX(-50%) translateY(-6px);
+  }
 }
 
 .board {

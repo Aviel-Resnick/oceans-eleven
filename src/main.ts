@@ -4,7 +4,7 @@ import { applyAction, newGame, whoMustAct } from "./game";
 import type { NetGuest, NetHost } from "./net";
 import { hostGame, joinGame, roomIdFromUrl } from "./net";
 import type { AppState, Handlers, UiFlags } from "./ui";
-import { render } from "./ui";
+import { render, tickCountdown } from "./ui";
 
 const root = document.querySelector<HTMLDivElement>("#app")!;
 
@@ -89,8 +89,11 @@ function goHome() {
   setApp({ screen: "home" });
 }
 
-// A single clock drives both the visible countdown (repaint every tick) and, on whichever
-// client is authoritative, the 60s auto-draw when nobody acts in time.
+// A single clock drives both the visible countdown and, on whichever client is authoritative,
+// the 60s auto-draw when nobody acts in time. The countdown updates via a direct text-node
+// write (tickCountdown), not a full paint() — a full root.innerHTML rebuild every 500ms was
+// real, measurable jank, and could even swallow a DRAW/CONCEDE click if the rebuild landed
+// between that button's mousedown and mouseup.
 setInterval(() => {
   if (app.screen !== "game" || app.state.phase !== "playing") return;
   const deadline = app.state.actDeadline;
@@ -99,7 +102,7 @@ setInterval(() => {
     if (side) sendAction?.({ type: "draw", side });
     return;
   }
-  paint();
+  tickCountdown(root, app);
 }, 500);
 
 const handlers: Handlers = {

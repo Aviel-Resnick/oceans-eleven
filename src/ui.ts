@@ -164,19 +164,10 @@ function renderToast(state: GameState): HTMLElement | null {
     toastEvent = state.lastEvent;
     toastExpiresAt = Date.now() + 1600;
   }
-  const remaining = toastExpiresAt - Date.now();
-  if (remaining <= 0) return null;
-
-  const elapsed = 1600 - remaining;
-  const progress = elapsed / 1600;
-  let opacity = 1;
-  if (progress < 0.15) opacity = progress / 0.15;
-  else if (progress > 0.7) opacity = Math.max(0, (1 - progress) / 0.3);
-
-  const toast = el("div", "toast mono", toastEvent);
-  toast.style.opacity = String(opacity);
-  toast.style.transform = `translateX(-50%) translateY(${(1 - opacity) * -6}px)`;
-  return toast;
+  if (Date.now() >= toastExpiresAt) return null;
+  // The element persists once created (render() only re-runs on real state changes now, not
+  // every tick), so a plain CSS animation plays through on its own — no per-frame JS needed.
+  return el("div", "toast mono toast-fade", toastEvent);
 }
 
 function renderGame(state: GameState, mySide: Side, handlers: Handlers): HTMLElement {
@@ -219,9 +210,11 @@ function renderGame(state: GameState, mySide: Side, handlers: Handlers): HTMLEle
 
   const meBlock = el("div", "hand-block");
   const statusTag = el("div", "status-tag mono");
+  statusTag.id = "status-tag";
   if (state.phase === "playing" && acting !== null && state.actDeadline !== null) {
-    const who = acting === mySide ? "YOU MUST ACT" : "OPPONENT MUST ACT";
-    statusTag.textContent = `${who} · ${formatCountdown(state.actDeadline - Date.now())}`;
+    statusTag.dataset.who = acting === mySide ? "YOU MUST ACT" : "OPPONENT MUST ACT";
+    statusTag.dataset.deadline = String(state.actDeadline);
+    statusTag.textContent = `${statusTag.dataset.who} · ${formatCountdown(state.actDeadline - Date.now())}`;
   }
   const meNameRow = el("div", "hand-name");
   meNameRow.append(el("div", undefined, meScore.label), statusTag);
@@ -307,6 +300,20 @@ function renderRulesOverlay(handlers: Handlers): HTMLElement {
   overlay.append(card);
 
   return overlay;
+}
+
+/**
+ * Cheap path for the once-a-second countdown tick: updates the act-deadline text in place
+ * instead of tearing down and rebuilding the whole board. A full render() every tick was not
+ * just wasteful — if it landed between a button's mousedown and mouseup, the DRAW/CONCEDE
+ * button got replaced mid-click and swallowed the click entirely.
+ */
+export function tickCountdown(root: HTMLElement, app: AppState) {
+  if (app.screen !== "game" || app.state.phase !== "playing") return;
+  const tag = root.querySelector<HTMLElement>("#status-tag");
+  if (!tag || !tag.dataset.deadline) return;
+  const deadline = Number(tag.dataset.deadline);
+  tag.textContent = `${tag.dataset.who} · ${formatCountdown(deadline - Date.now())}`;
 }
 
 export function render(root: HTMLElement, app: AppState, flags: UiFlags, handlers: Handlers) {
