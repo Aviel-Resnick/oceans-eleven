@@ -9,12 +9,19 @@ export type AppState =
   | { screen: "joining" }
   | { screen: "game"; state: GameState; mySide: Side };
 
+export interface UiFlags {
+  rulesOpen: boolean;
+  /** Guest is waiting on the host's broadcast after requesting a rematch (host restarts instantly and never sets this). */
+  rematchPending: boolean;
+}
+
 export interface Handlers {
   onPlayHouse: () => void;
   onInviteFriend: () => void;
   onCopyLink: (link: string) => void;
   onDraw: () => void;
   onConcede: () => void;
+  onPlayAgain: () => void;
   onHome: () => void;
   onOpenRules: () => void;
   onCloseRules: () => void;
@@ -27,7 +34,16 @@ const RULES = [
   { n: "04", t: "The weaker side acts", d: "Draw another card to strengthen the hand, or concede it. A tie means both sides draw." },
   { n: "05", t: "Six hands takes the match", d: "Won hands are discarded — those cards never come back. Run out of deck and you concede." },
   { n: "06", t: "No concede at five", d: "Once your opponent reaches five wins, conceding is off the table. Play it out." },
+  { n: "07", t: "60 seconds to act", d: "Sit on a decision too long and the game draws for you automatically." },
 ];
+
+// Render-history state, tracked across calls so we only animate cards that are genuinely new
+// this render (not every card, every time — a full re-render also happens on each timer tick).
+let lastHandNumber = -1;
+let lastMeCount = 0;
+let lastFoeCount = 0;
+let toastEvent = "";
+let toastExpiresAt = 0;
 
 function el<K extends keyof HTMLElementTagNameMap>(
   tag: K,
@@ -38,6 +54,13 @@ function el<K extends keyof HTMLElementTagNameMap>(
   if (className) node.className = className;
   if (text !== undefined) node.textContent = text;
   return node;
+}
+
+function formatCountdown(ms: number): string {
+  const totalSeconds = Math.max(0, Math.ceil(ms / 1000));
+  const m = Math.floor(totalSeconds / 60);
+  const s = totalSeconds % 60;
+  return `${m}:${String(s).padStart(2, "0")}`;
 }
 
 function renderNav(handlers: Handlers, onHome: boolean): HTMLElement {
@@ -57,9 +80,12 @@ function renderNav(handlers: Handlers, onHome: boolean): HTMLElement {
   return nav;
 }
 
-function renderCard(card: Card): HTMLElement {
-  const node = el("div", "card");
-  node.append(el("div", "rank", rankLabel(card.rank)), el("div", "suit", card.suit));
+const RED_SUITS = new Set(["♥", "♦"]);
+
+function renderCard(card: Card, isNew: boolean): HTMLElement {
+  const node = el("div", isNew ? "card dealing" : "card");
+  const suitClass = RED_SUITS.has(card.suit) ? "suit red" : "suit";
+  node.append(el("div", "rank", rankLabel(card.rank)), el("div", suitClass, card.suit));
   return node;
 }
 
@@ -104,6 +130,13 @@ function renderHome(handlers: Handlers): HTMLElement {
   actions.append(playHouse, inviteFriend);
   root.append(actions);
   root.append(el("div", "note mono", "PLAY THE HOUSE IS COMING SOON — TRY INVITE A FRIEND."));
+
+  const links = el("div", "home-links mono");
+  const rules = el("a", undefined, "RULES");
+  rules.onclick = handlers.onOpenRules;
+  links.append(rules);
+  root.append(links);
+
   return root;
 }
 
@@ -126,6 +159,26 @@ function renderJoining(): HTMLElement {
   return root;
 }
 
+function renderToast(state: GameState): HTMLElement | null {
+  if (state.lastEvent !== toastEvent) {
+    toastEvent = state.lastEvent;
+    toastExpiresAt = Date.now() + 1600;
+  }
+  const remaining = toastExpiresAt - Date.now();
+  if (remaining <= 0) return null;
+
+  const elapsed = 1600 - remaining;
+  const progress = elapsed / 1600;
+  let opacity = 1;
+  if (progress < 0.15) opacity = progress / 0.15;
+  else if (progress > 0.7) opacity = Math.max(0, (1 - progress) / 0.3);
+
+  const toast = el("div", "toast mono", toastEvent);
+  toast.style.opacity = String(opacity);
+  toast.style.transform = `translateX(-50%) translateY(${(1 - opacity) * -6}px)`;
+  return toast;
+}
+
 function renderGame(state: GameState, mySide: Side, handlers: Handlers): HTMLElement {
   const foeSide: Side = mySide === "you" ? "opponent" : "you";
   const me = state[mySide];
@@ -134,7 +187,15 @@ function renderGame(state: GameState, mySide: Side, handlers: Handlers): HTMLEle
   const foeScore = handScore(state, foeSide);
   const acting = whoMustAct(state);
 
+  const isNewHand = state.handNumber !== lastHandNumber;
+  const newMeCount = isNewHand ? me.hand.length : Math.max(0, me.hand.length - lastMeCount);
+  const newFoeCount = isNewHand ? foe.hand.length : Math.max(0, foe.hand.length - lastFoeCount);
+
   const root = el("div", "board");
+
+  const toast = renderToast(state);
+  if (toast) root.append(toast);
+
   const sidePanel = el("div", "side-panel mono");
   sidePanel.append(
     renderStatBlock("OPPONENT", foe.wins, foe.deck.length, 52, state.winsNeeded),
@@ -146,7 +207,7 @@ function renderGame(state: GameState, mySide: Side, handlers: Handlers): HTMLEle
 
   const foeBlock = el("div", "hand-block");
   const foeCards = el("div", "cards");
-  foe.hand.forEach((c) => foeCards.append(renderCard(c)));
+  foe.hand.forEach((c, i) => foeCards.append(renderCard(c, i >= foe.hand.length - newFoeCount)));
   foeBlock.append(foeCards);
   const foeNameRow = el("div", "hand-name");
   foeNameRow.append(el("div", undefined, foeScore.label));
@@ -158,14 +219,15 @@ function renderGame(state: GameState, mySide: Side, handlers: Handlers): HTMLEle
 
   const meBlock = el("div", "hand-block");
   const statusTag = el("div", "status-tag mono");
-  if (state.phase === "playing") {
-    statusTag.textContent = acting === mySide ? "YOU MUST ACT" : acting === foeSide ? "OPPONENT MUST ACT" : "";
+  if (state.phase === "playing" && acting !== null && state.actDeadline !== null) {
+    const who = acting === mySide ? "YOU MUST ACT" : "OPPONENT MUST ACT";
+    statusTag.textContent = `${who} · ${formatCountdown(state.actDeadline - Date.now())}`;
   }
   const meNameRow = el("div", "hand-name");
   meNameRow.append(el("div", undefined, meScore.label), statusTag);
   meBlock.append(meNameRow);
   const meCards = el("div", "cards");
-  me.hand.forEach((c) => meCards.append(renderCard(c)));
+  me.hand.forEach((c, i) => meCards.append(renderCard(c, i >= me.hand.length - newMeCount)));
   meBlock.append(meCards);
 
   if (state.phase === "playing" && acting === mySide) {
@@ -185,10 +247,15 @@ function renderGame(state: GameState, mySide: Side, handlers: Handlers): HTMLEle
   handsArea.append(meBlock);
 
   root.append(handsArea);
+
+  lastHandNumber = state.handNumber;
+  lastMeCount = me.hand.length;
+  lastFoeCount = foe.hand.length;
+
   return root;
 }
 
-function renderMatchEnd(state: GameState, mySide: Side, handlers: Handlers): HTMLElement {
+function renderMatchEnd(state: GameState, mySide: Side, rematchPending: boolean, handlers: Handlers): HTMLElement {
   const overlay = el("div", "overlay");
   const card = el("div", "overlay-card match-end");
   let headline: string;
@@ -196,10 +263,14 @@ function renderMatchEnd(state: GameState, mySide: Side, handlers: Handlers): HTM
   else if (state.matchWinner === mySide) headline = "You won the match";
   else headline = "You lost the match";
   card.append(el("h2", undefined, headline));
+
   const actions = el("div", "actions");
+  const again = el("button", "btn-primary", rematchPending ? "WAITING FOR REMATCH…" : "PLAY AGAIN");
+  again.disabled = rematchPending;
+  again.onclick = handlers.onPlayAgain;
   const home = el("button", "btn-secondary", "HOME");
   home.onclick = handlers.onHome;
-  actions.append(home);
+  actions.append(again, home);
   card.append(actions);
   overlay.append(card);
   return overlay;
@@ -233,11 +304,12 @@ function renderRulesOverlay(handlers: Handlers): HTMLElement {
   gotIt.onclick = handlers.onCloseRules;
   footer.append(gotIt);
   card.append(footer);
+  overlay.append(card);
 
   return overlay;
 }
 
-export function render(root: HTMLElement, app: AppState, rulesOpen: boolean, handlers: Handlers) {
+export function render(root: HTMLElement, app: AppState, flags: UiFlags, handlers: Handlers) {
   root.innerHTML = "";
   const onHomeVisible = app.screen !== "home";
 
@@ -250,11 +322,11 @@ export function render(root: HTMLElement, app: AppState, rulesOpen: boolean, han
   } else {
     root.append(renderNav(handlers, onHomeVisible), renderGame(app.state, app.mySide, handlers));
     if (app.state.phase === "matchOver") {
-      root.append(renderMatchEnd(app.state, app.mySide, handlers));
+      root.append(renderMatchEnd(app.state, app.mySide, flags.rematchPending, handlers));
     }
   }
 
-  if (rulesOpen) {
+  if (flags.rulesOpen) {
     root.append(renderRulesOverlay(handlers));
   }
 }

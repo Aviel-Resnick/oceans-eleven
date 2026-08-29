@@ -13,6 +13,8 @@ export interface PlayerState {
 
 export type Phase = "playing" | "matchOver";
 
+export const ACT_TIMEOUT_MS = 60_000;
+
 export interface GameState {
   winsNeeded: number;
   handNumber: number;
@@ -21,6 +23,8 @@ export interface GameState {
   phase: Phase;
   matchWinner: Side | "draw" | null;
   lastEvent: string;
+  /** Epoch ms by which whoever must act needs to draw or concede, else the host auto-draws for them. Null once the match is over. */
+  actDeadline: number | null;
 }
 
 export interface Action {
@@ -53,10 +57,12 @@ export function newGame(winsNeeded = 6): GameState {
     phase: "playing",
     matchWinner: null,
     lastEvent: "New match started.",
+    actDeadline: null,
   };
   dealOpeningCard(state, "you");
   dealOpeningCard(state, "opponent");
   resolveTies(state);
+  state.actDeadline = state.phase === "playing" ? Date.now() + ACT_TIMEOUT_MS : null;
   return state;
 }
 
@@ -138,7 +144,7 @@ function resolveTies(state: GameState) {
   }
 }
 
-/** Pure reducer: returns a new state, ignoring illegal/stale actions (wrong side's turn, concede while locked) rather than throwing — callers (local UI, multiplayer host) don't need to pre-validate every action themselves. */
+/** Pure reducer: returns a new state, ignoring illegal/stale actions (wrong side's turn, concede while locked) rather than throwing — callers (local UI, multiplayer host) don't need to pre-validate every action themselves. The act-deadline only refreshes on a real mutation, not on a rejected no-op, so spamming an illegal action can't stall the clock. */
 export function applyAction(state: GameState, action: Action): GameState {
   const next: GameState = structuredClone(state);
   const actingSide = whoMustAct(next);
@@ -147,17 +153,18 @@ export function applyAction(state: GameState, action: Action): GameState {
   if (action.type === "concede") {
     if (!canConcede(next, action.side)) return next;
     endHand(next, other(action.side));
-    return next;
+  } else {
+    const player = next[action.side];
+    const card = player.deck.pop();
+    if (!card) {
+      forceConcede(next, action.side);
+    } else {
+      player.hand.push(card);
+      next.lastEvent = action.side === "you" ? "You drew a card." : "The house drew a card.";
+      resolveTies(next);
+    }
   }
 
-  const player = next[action.side];
-  const card = player.deck.pop();
-  if (!card) {
-    forceConcede(next, action.side);
-    return next;
-  }
-  player.hand.push(card);
-  next.lastEvent = action.side === "you" ? "You drew a card." : "The house drew a card.";
-  resolveTies(next);
+  next.actDeadline = next.phase === "playing" ? Date.now() + ACT_TIMEOUT_MS : null;
   return next;
 }

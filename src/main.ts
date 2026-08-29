@@ -1,20 +1,24 @@
 import "./style.css";
 import type { Action, GameState, Side } from "./game";
-import { applyAction, newGame } from "./game";
+import { applyAction, newGame, whoMustAct } from "./game";
 import type { NetGuest, NetHost } from "./net";
 import { hostGame, joinGame, roomIdFromUrl } from "./net";
-import type { AppState, Handlers } from "./ui";
+import type { AppState, Handlers, UiFlags } from "./ui";
 import { render } from "./ui";
 
 const root = document.querySelector<HTMLDivElement>("#app")!;
 
 let app: AppState = { screen: "home" };
-let rulesOpen = false;
+let flags: UiFlags = { rulesOpen: false, rematchPending: false };
 let currentNet: NetHost | NetGuest | null = null;
 let sendAction: ((action: Action) => void) | null = null;
+/** True for the host (and, eventually, local single-player) — the side allowed to enforce the act-timer by auto-drawing on behalf of whoever is late. A guest only ever displays the countdown; the host's broadcast is what actually moves the game forward. */
+let isAuthoritative = true;
+/** Set only while hosting, so "PLAY AGAIN" can restart in place without a network round trip. */
+let hostRematch: (() => void) | null = null;
 
 function paint() {
-  render(root, app, rulesOpen, handlers);
+  render(root, app, flags, handlers);
 }
 
 function setApp(next: AppState) {
@@ -30,15 +34,17 @@ function leaveNet() {
   currentNet?.leave();
   currentNet = null;
   sendAction = null;
+  hostRematch = null;
 }
 
 function startHosting() {
   leaveNet();
+  isAuthoritative = true;
   const net = hostGame();
   currentNet = net;
   setApp({ screen: "hosting", link: net.link });
 
-  net.onPeerJoined(() => {
+  function beginMatch() {
     let state = newGame();
     net.broadcastState(state);
 
@@ -53,26 +59,48 @@ function startHosting() {
       setApp(gameScreen(state, "you"));
     });
 
+    flags = { ...flags, rematchPending: false };
     setApp(gameScreen(state, "you"));
-  });
+  }
+
+  hostRematch = beginMatch;
+  net.onPeerJoined(() => beginMatch());
+  net.onRematchRequest(() => beginMatch());
 }
 
 function joinAsGuest(roomId: string) {
   leaveNet();
+  isAuthoritative = false;
   const net = joinGame(roomId);
   currentNet = net;
   setApp({ screen: "joining" });
 
   sendAction = (action) => net.sendAction(action);
-  net.onState((state) => setApp(gameScreen(state, "opponent")));
+  net.onState((state) => {
+    flags = { ...flags, rematchPending: false };
+    setApp(gameScreen(state, "opponent"));
+  });
 }
 
 function goHome() {
   leaveNet();
-  rulesOpen = false;
+  flags = { rulesOpen: false, rematchPending: false };
   history.replaceState(null, "", window.location.pathname);
   setApp({ screen: "home" });
 }
+
+// A single clock drives both the visible countdown (repaint every tick) and, on whichever
+// client is authoritative, the 60s auto-draw when nobody acts in time.
+setInterval(() => {
+  if (app.screen !== "game" || app.state.phase !== "playing") return;
+  const deadline = app.state.actDeadline;
+  if (isAuthoritative && deadline !== null && Date.now() >= deadline) {
+    const side = whoMustAct(app.state);
+    if (side) sendAction?.({ type: "draw", side });
+    return;
+  }
+  paint();
+}, 500);
 
 const handlers: Handlers = {
   onPlayHouse: () => {
@@ -88,13 +116,22 @@ const handlers: Handlers = {
   onConcede: () => {
     if (app.screen === "game") sendAction?.({ type: "concede", side: app.mySide });
   },
+  onPlayAgain: () => {
+    if (hostRematch) {
+      hostRematch();
+    } else if (currentNet?.role === "guest") {
+      currentNet.requestRematch();
+      flags = { ...flags, rematchPending: true };
+      paint();
+    }
+  },
   onHome: goHome,
   onOpenRules: () => {
-    rulesOpen = true;
+    flags = { ...flags, rulesOpen: true };
     paint();
   },
   onCloseRules: () => {
-    rulesOpen = false;
+    flags = { ...flags, rulesOpen: false };
     paint();
   },
 };

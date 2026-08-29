@@ -129,6 +129,14 @@ button:disabled {
   font-size: 12px;
   color: #525252;
 }
+.home-links {
+  display: flex;
+  justify-content: center;
+  gap: 22px;
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  color: #525252;
+}
 
 .status-screen {
   flex: 1;
@@ -162,16 +170,118 @@ button:disabled {
   font-weight: 700;
 }
 
+.toast {
+  position: absolute;
+  top: 18px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: #141414;
+  border: 1px solid #333;
+  border-radius: 4px;
+  padding: 8px 16px;
+  font-size: 12px;
+  letter-spacing: 0.06em;
+  max-width: calc(100% - 32px);
+  text-align: center;
+  z-index: 5;
+  pointer-events: none;
+}
+
 .board {
+  position: relative;
   flex: 1;
   display: grid;
   grid-template-columns: 220px 1fr;
   min-height: 0;
 }
 @media (max-width: 720px) {
+  /* Mobile follows the design's interleaved order — opponent stats, opponent hand, showdown
+     divider, your hand, your stats, then actions — rather than the desktop's two-column split.
+     display:contents lets the side-panel/hands-area wrappers drop out of layout so their
+     children can be reordered as flat flex items, without duplicating any markup per breakpoint. */
   .board {
-    grid-template-columns: 1fr;
-    grid-template-rows: auto 1fr;
+    display: flex;
+    flex-direction: column;
+    padding-top: 34px;
+  }
+  .toast {
+    top: 4px;
+  }
+  .side-panel,
+  .hands-area {
+    display: contents;
+  }
+  .side-panel .block:first-child {
+    order: 1;
+  }
+  .hands-area .hand-block:first-child {
+    order: 2;
+  }
+  .showdown-divider {
+    order: 3;
+  }
+  .hands-area .hand-block:last-child {
+    order: 4;
+  }
+  .side-panel .block:last-child {
+    order: 5;
+  }
+
+  /* Compact stat rows — label/pips/win-count inline, thin deck bar — instead of the desktop's
+     tall stacked block, so the two stat rows plus both hands fit without excess scrolling. */
+  .block {
+    padding: 14px 20px;
+    flex-direction: row !important;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 10px !important;
+  }
+  .block .label {
+    flex: 1;
+  }
+  .block .win-count {
+    font-size: 20px;
+  }
+  .block .pips {
+    gap: 5px;
+  }
+  .block .pip {
+    width: 13px;
+    height: 13px;
+  }
+  .block .deck-meter {
+    flex-basis: 100%;
+    border-top: none;
+    padding-top: 0;
+    flex-direction: row;
+    align-items: center;
+    gap: 10px;
+  }
+  .block .deck-meter .row {
+    flex: none;
+  }
+  .block .deck-meter .bar {
+    flex: 1;
+  }
+
+  .hand-block {
+    padding: 12px;
+    gap: 10px;
+  }
+  .card {
+    width: 74px;
+    height: 106px;
+    padding: 10px;
+  }
+  .card .rank {
+    font-size: 21px;
+  }
+  .card .suit {
+    font-size: 24px;
+  }
+
+  .actions-row {
+    padding: 0 16px;
   }
 }
 
@@ -267,7 +377,9 @@ button:disabled {
   flex-direction: column;
   justify-content: space-between;
   padding: 13px;
-  animation: dealIn 200ms ease-out both;
+}
+.card.dealing {
+  animation: dealIn 340ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
 }
 .card .rank {
   font-size: 26px;
@@ -279,10 +391,17 @@ button:disabled {
   text-align: right;
   line-height: 1;
 }
+.card .suit.red {
+  color: #b91c1c;
+}
 @keyframes dealIn {
   from {
-    transform: translateY(14px);
+    transform: translateY(28px) rotate(-6deg) scale(0.85);
     opacity: 0;
+  }
+  60% {
+    transform: translateY(-4px) rotate(1deg) scale(1.02);
+    opacity: 1;
   }
   to {
     transform: none;

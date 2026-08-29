@@ -25,6 +25,7 @@ export interface NetHost {
   link: string;
   onPeerJoined: (cb: () => void) => void;
   onGuestAction: (cb: (action: Action) => void) => void;
+  onRematchRequest: (cb: () => void) => void;
   broadcastState: (state: GameState) => void;
   leave: () => void;
 }
@@ -34,12 +35,15 @@ export interface NetHost {
  * sends actions and receives broadcasts, so the two peers never run independent simulations
  * that could drift out of sync. GameState/Action are sent as DataPayload (Trystero's JSON wire
  * type) and cast back at the boundary since neither type is exported for direct generic use.
+ * The room itself (and this WebRTC connection) stays alive across a rematch — only the game
+ * state resets, so a rematch never needs a new link.
  */
 export function hostGame(): NetHost {
   const roomId = randomRoomId();
   const room = joinRoom({ appId: APP_ID }, roomId);
   const stateChannel = room.makeAction<DataPayload>("state");
   const actionChannel = room.makeAction<DataPayload>("action");
+  const controlChannel = room.makeAction<DataPayload>("control");
 
   return {
     role: "host",
@@ -50,6 +54,11 @@ export function hostGame(): NetHost {
     },
     onGuestAction: (cb) => {
       actionChannel.onMessage = (data) => cb(data as unknown as Action);
+    },
+    onRematchRequest: (cb) => {
+      controlChannel.onMessage = (data) => {
+        if ((data as { type?: string }).type === "rematch") cb();
+      };
     },
     broadcastState: (state) => {
       void stateChannel.send(state as unknown as DataPayload);
@@ -65,6 +74,7 @@ export interface NetGuest {
   roomId: string;
   onState: (cb: (state: GameState) => void) => void;
   sendAction: (action: Action) => void;
+  requestRematch: () => void;
   leave: () => void;
 }
 
@@ -72,6 +82,7 @@ export function joinGame(roomId: string): NetGuest {
   const room = joinRoom({ appId: APP_ID }, roomId);
   const stateChannel = room.makeAction<DataPayload>("state");
   const actionChannel = room.makeAction<DataPayload>("action");
+  const controlChannel = room.makeAction<DataPayload>("control");
 
   return {
     role: "guest",
@@ -81,6 +92,9 @@ export function joinGame(roomId: string): NetGuest {
     },
     sendAction: (action) => {
       void actionChannel.send(action as unknown as DataPayload);
+    },
+    requestRematch: () => {
+      void controlChannel.send({ type: "rematch" } as unknown as DataPayload);
     },
     leave: () => {
       void room.leave();
